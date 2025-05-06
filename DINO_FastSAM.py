@@ -12,6 +12,7 @@ from typing import List
 
 live = False
 save_images = False
+
 image_cnt = 0
 folder_path = '4_double-packages'
 output_folder = 'out'
@@ -88,6 +89,9 @@ print("Connected to server")
 
 data = b""
 payload_size = struct.calcsize("Q")
+
+if live and save_images:
+    out = cv2.VideoWriter('output.avi', cv2.VideoWriter_fourcc(*'XVID'), 30, (640, 480))
 
 while True:
     if live:
@@ -199,7 +203,7 @@ while True:
                 mask_uint8 = cv2.bitwise_and(mask_uint8, componentMask)
             else:
                 colour = get_random_color()
-                cv2.putText(frame, f"Package {package_no}", (int(centroid[i][0]),  int(centroid[i][0])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2) 
+                cv2.putText(frame, f"Package {package_no}", (int(centroid[i][0]),  int(centroid[i][1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2) 
                 package_no+=1
 
         if np.all(mask_uint8 == 0):
@@ -212,6 +216,9 @@ while True:
     annotated_image_filt = mask_annotator.annotate(scene=frame.copy(), detections=detections)
     # annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
+    if live and save_images:
+        out.write(frame)
+
     cv2.imshow("Orig", annotated_image_orig)
     cv2.imshow("Filtered", annotated_image_filt)
     if cv2.waitKey(1) == ord('q'):
@@ -219,9 +226,12 @@ while True:
             break
         else:
             image_cnt += 1
-            cv2.imwrite(output_path, annotated_image_filt)
+            if save_images:
+                cv2.imwrite(output_path, annotated_image_filt)
             if image_cnt > 11:
                 break
 
+if live and save_images:
+    out.release()
 client_socket.close()
 cv2.destroyAllWindows()
