@@ -91,7 +91,7 @@ data = b""
 payload_size = struct.calcsize("Q")
 
 if live and save_images:
-    out = cv2.VideoWriter('output.avi', cv2.VideoWriter_fourcc(*'XVID'), 30, (640, 480))
+    out = cv2.VideoWriter('output.avi', cv2.VideoWriter_fourcc(*'XVID'), 10, (640, 480))
 
 while True:
     if live:
@@ -217,7 +217,7 @@ while True:
     # annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
     if live and save_images:
-        out.write(frame)
+        out.write(annotated_image_filt)
 
     cv2.imshow("Orig", annotated_image_orig)
     cv2.imshow("Filtered", annotated_image_filt)
