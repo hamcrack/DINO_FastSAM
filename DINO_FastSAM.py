@@ -10,12 +10,21 @@ from ultralytics import FastSAM
 
 from typing import List
 
+live = False
+save_images = False
+image_cnt = 0
+folder_path = '4_double-packages'
+output_folder = 'out'
+
 def enhance_class_name(class_names: List[str]) -> List[str]:
     return [
         f"all {class_name}s"
         for class_name
         in class_names
     ]
+
+def get_random_color():
+    return [np.random.randint(0, 256), np.random.randint(0, 256), np.random.randint(0, 256)]
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Using device:", DEVICE)
@@ -46,16 +55,9 @@ def segment(image: np.ndarray, xyxy: np.ndarray) -> np.ndarray:
         torch_box = torch.tensor([int(val) for val in box], device=fast_sam_model.device).unsqueeze(0)
         results = fast_sam_model(image, bboxes=torch_box)
 
-        print("Results:")
         if results and len(results) > 0:  # Check if results list is not empty
             if hasattr(results[0], 'masks') and results[0].masks is not None:
                 masks_np = results[0].masks.data.cpu().numpy()
-                print("mask shape:", masks_np.shape)
-                print("mask:\n", masks_np)
-                if hasattr(results[0], 'probs') and results[0].probs is not None:
-                    print("probs:", results[0].probs.data.cpu().numpy())
-                else:
-                    print("probs: None")
                 all_masks.extend(masks_np)
             else:
                 print("No masks found in results[0].")
@@ -64,10 +66,21 @@ def segment(image: np.ndarray, xyxy: np.ndarray) -> np.ndarray:
 
     return np.array(all_masks)
 
-TEXT_PROMPT = "chair"
-CLASSES = ['mug', 'pen', 'person', 'hand', 'chair', 'box', 'mouse']
+TEXT_PROMPT = "package"
+CLASSES = ['package']
 BOX_TRESHOLD = 0.35
 TEXT_TRESHOLD = 0.25
+
+# Get screen dimensions
+screen_width, screen_height = 1920, 900 #  set to a default.  You can use  `get_monitors()` from the screeninfo library if needed
+
+# Create the output folder if it doesn't exist
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
+    print(f"Created output folder: {output_folder}")
+
+# Get a list of all files in the folder
+image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'))]
 
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client_socket.connect(('172.25.0.1', 9999))
@@ -77,20 +90,31 @@ data = b""
 payload_size = struct.calcsize("Q")
 
 while True:
-    while len(data) < payload_size:
-        data += client_socket.recv(4096)
+    if live:
+        while len(data) < payload_size:
+            data += client_socket.recv(4096)
 
-    packed_msg_size = data[:payload_size]
-    data = data[payload_size:]
-    msg_size = struct.unpack("Q", packed_msg_size)[0]
+        packed_msg_size = data[:payload_size]
+        data = data[payload_size:]
+        msg_size = struct.unpack("Q", packed_msg_size)[0]
 
-    while len(data) < msg_size:
-        data += client_socket.recv(4096)
+        while len(data) < msg_size:
+            data += client_socket.recv(4096)
 
-    frame_data = data[:msg_size]
-    data = data[msg_size:]
+        frame_data = data[:msg_size]
+        data = data[msg_size:]
 
-    frame = pickle.loads(frame_data)
+        frame = pickle.loads(frame_data)
+
+    else:
+        # Construct the full path to the image
+        image_path = os.path.join(folder_path, image_files[image_cnt])
+        output_path = os.path.join(output_folder, image_files[image_cnt]) #save with original name
+
+            # Read the image using OpenCV
+        frame = cv2.imread(image_path)
+        frame = cv2.resize(frame, (640, 480))
+
 
     detections = grounding_dino_model.predict_with_classes(
         image=frame,
@@ -99,7 +123,7 @@ while True:
         text_threshold=TEXT_TRESHOLD
     )
 
-    box_annotator = sv.BoxAnnotator()
+    # box_annotator = sv.BoxAnnotator()
     mask_annotator = sv.MaskAnnotator()
     labels = []
     filtered_detections_list = []
@@ -149,12 +173,55 @@ while True:
         xyxy=formatted_detections.xyxy
     )
 
-    annotated_image = mask_annotator.annotate(scene=frame.copy(), detections=detections)
-    annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
+    print("Orig No. of detections: ", len(detections.mask))
+    annotated_image_orig = mask_annotator.annotate(scene=frame.copy(), detections=detections)
 
-    cv2.imshow("Received in WSL", annotated_image)
+    new_masks = []
+    kernel = np.ones((20, 20), np.uint8)
+    edge_lim = 150
+    package_no = 1
+    for mask in detections.mask:
+        mask_uint8 = mask.astype(np.uint8)
+        mask_uint8 = cv2.erode(mask_uint8, kernel) 
+        analysis = cv2.connectedComponentsWithStats(mask_uint8, 4, cv2.CV_32S) 
+        (totalLabels, label_ids, values, centroid) = analysis 
+        # print("     Total labels:", totalLabels)
+        # print("     centroids : ", centroid)  
+        for i in range(1, totalLabels): 
+            center_near_edge = False
+
+            if len(mask[0]) - edge_lim < centroid[i][0] or centroid[i][0] < edge_lim or len(mask) - edge_lim < centroid[i][1] or centroid[i][1] < edge_lim:
+                center_near_edge = True
+            area = values[i, cv2.CC_STAT_AREA]   
+
+            if area < 10000 or center_near_edge: 
+                componentMask = (label_ids != i).astype("uint8") * 255
+                mask_uint8 = cv2.bitwise_and(mask_uint8, componentMask)
+            else:
+                colour = get_random_color()
+                cv2.putText(frame, f"Package {package_no}", (int(centroid[i][0]),  int(centroid[i][0])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2) 
+                package_no+=1
+
+        if np.all(mask_uint8 == 0):
+            print("Removed a mask")
+        else:
+            new_masks.extend([mask_uint8]) 
+    print("New No. of detections: ", len(new_masks))
+    detections.mask = np.array(new_masks)
+    
+    annotated_image_filt = mask_annotator.annotate(scene=frame.copy(), detections=detections)
+    # annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
+
+    cv2.imshow("Orig", annotated_image_orig)
+    cv2.imshow("Filtered", annotated_image_filt)
     if cv2.waitKey(1) == ord('q'):
-        break
+        if live:
+            break
+        else:
+            image_cnt += 1
+            cv2.imwrite(output_path, annotated_image_filt)
+            if image_cnt > 11:
+                break
 
 client_socket.close()
 cv2.destroyAllWindows()
